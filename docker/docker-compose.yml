@@ -1,0 +1,19 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - scene_data:/data/scenes
+      - index_data:/data/indexes
+    environment:
+      SQ_SCENE_ROOT: /data/scenes
+      SQ_INDEX_ROOT: /data/indexes
+      SQ_LOG_LEVEL: INFO
+    restart: unless-stopped
+
+volumes:
+  scene_data:
+  index_data:

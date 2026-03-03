@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Rust
+target/
+Cargo.lock
+
+# Data & models
+data/
+*.ply
+*.splat
+*.las
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+models/weights/
+
+# Indexes
+*.faiss
+*.index
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/data/
+
+# Logs
+*.log
+logs/
+
+# Planning docs
+IMPLEMENTATION_PLAN.md
+CLAUDE.md

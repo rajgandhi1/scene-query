@@ -1,0 +1,14 @@
+# Development overrides — lighter models, verbose logging
+app:
+  log_level: DEBUG
+
+models:
+  visual_encoder: "ViT-B-32"       # keep fast model in dev
+  depth: "vits"                     # smallest DepthAnything variant
+
+ingestion:
+  run_depth: false                  # skip depth in dev for speed
+  clip_batch_size: 8
+
+query:
+  rate_limit_per_minute: 1000       # no rate limit in dev

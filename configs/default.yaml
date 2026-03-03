@@ -1,0 +1,39 @@
+# scene-query default configuration
+# Override individual keys in dev.yaml or prod.yaml
+
+app:
+  log_level: INFO
+  host: "0.0.0.0"
+  port: 8000
+
+paths:
+  scene_root: "/data/scenes"
+  index_root: "/data/indexes"
+  socket_path: "/tmp/scene-query-viewer.sock"
+
+models:
+  visual_encoder: "ViT-B-32"       # swap to "ViT-L-14" for higher quality
+  encoder_pretrained: "openai"
+  feature_dim: 512                  # must match visual_encoder output dim
+  segmentation: "sam-vit-h"
+  detection: "grounding-dino-base"
+  depth: "vitl"
+
+ingestion:
+  run_undistortion: true
+  run_depth: true
+  aggregation: "mean"               # mean or max over views
+  tile_size: 224
+  tile_stride: 112
+  clip_batch_size: 32
+  max_file_size_gb: 5.0
+
+query:
+  default_top_k: 100
+  default_threshold: 0.25
+  rate_limit_per_minute: 60
+  ipc_timeout_seconds: 5.0
+
+feature_store:
+  ivf_clusters: 256                 # for IVFFlat when 100K < N < 1M
+  hnsw_m: 32                        # HNSW connectivity parameter

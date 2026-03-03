@@ -1,0 +1,98 @@
+"""FastAPI application factory and lifespan."""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+from python.api.routes import ingest, query, scene
+from python.api.schemas import settings
+from python.feature_store.persistence import IndexPersistence
+from python.utils.errors import IngestionError, QueryError, SceneQueryError
+from python.utils.ipc import ViewerBridge
+from python.utils.logging import configure_logging, get_logger
+
+logger = get_logger(__name__)
+
+# Module-level singletons (set during lifespan startup)
+_persistence: IndexPersistence | None = None
+_viewer_bridge: ViewerBridge | None = None
+
+
+def get_persistence() -> IndexPersistence:
+    if _persistence is None:
+        raise RuntimeError("App not started — persistence not initialized")
+    return _persistence
+
+
+def get_viewer_bridge() -> ViewerBridge | None:
+    return _viewer_bridge
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    global _persistence, _viewer_bridge
+
+    configure_logging(level=settings.log_level)
+    logger.info("scene-query starting up")
+
+    _persistence = IndexPersistence(store_root=settings.index_root)
+
+    _viewer_bridge = ViewerBridge(socket_path=settings.socket_path)
+    await _viewer_bridge.connect()
+
+    yield  # Application runs here
+
+    logger.info("scene-query shutting down")
+    if _viewer_bridge:
+        await _viewer_bridge.close()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="scene-query",
+        description="Natural language queries over 3D scenes",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    # Register routes
+    prefix = "/api/v1"
+    app.include_router(ingest.router, prefix=prefix, tags=["ingestion"])
+    app.include_router(query.router, prefix=prefix, tags=["query"])
+    app.include_router(scene.router, prefix=prefix, tags=["scene"])
+
+    # Error handlers
+    @app.exception_handler(IngestionError)
+    async def ingestion_error_handler(request, exc: IngestionError):
+        return JSONResponse(status_code=422, content={"error": "ingestion_failed", "detail": str(exc)})
+
+    @app.exception_handler(QueryError)
+    async def query_error_handler(request, exc: QueryError):
+        return JSONResponse(status_code=500, content={"error": "query_failed", "detail": str(exc)})
+
+    @app.exception_handler(SceneQueryError)
+    async def generic_scene_error_handler(request, exc: SceneQueryError):
+        return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(exc)})
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request, exc: Exception):
+        logger.exception("Unhandled error")
+        return JSONResponse(status_code=500, content={"error": "internal_error", "detail": "See server logs"})
+
+    return app
+
+
+app = create_app()
+
+
+def main() -> None:
+    import uvicorn
+    uvicorn.run("python.api.app:app", host="0.0.0.0", port=8000, reload=False)
+
+
+if __name__ == "__main__":
+    main()

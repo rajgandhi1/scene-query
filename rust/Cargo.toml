@@ -1,0 +1,18 @@
+[package]
+name = "scene-query-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Rust viewer bridge for scene-query (threecrate integration)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lib]
+name = "scene_query_viewer"
+crate-type = ["cdylib", "rlib"]

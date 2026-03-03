@@ -1,0 +1,17 @@
+# Production overrides — higher quality models, strict limits
+app:
+  log_level: WARNING
+
+models:
+  visual_encoder: "ViT-L-14"       # higher quality, slower
+  encoder_pretrained: "openai"
+  feature_dim: 768
+  depth: "vitl"
+
+ingestion:
+  run_undistortion: true
+  run_depth: true
+  clip_batch_size: 32
+
+query:
+  rate_limit_per_minute: 60
