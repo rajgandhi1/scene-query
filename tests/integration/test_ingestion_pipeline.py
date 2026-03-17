@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
 from python.feature_lifting.clip_extractor import ImageFeatures
 from python.feature_store.index import FeatureIndex
-from python.ingestion.loaders import PointCloud
 
 
 @pytest.mark.integration
@@ -57,14 +55,13 @@ def test_clip_lifting_produces_correct_shape(tiny_point_cloud, tmp_path):
         cx=112.0, cy=112.0,
         width=224, height=224,
     )
-    request = IngestRequest(
-        scene_path=tmp_path / "scene.ply",  # won't be read; validator skipped below
+    request = IngestRequest.model_construct(
+        scene_path=tmp_path / "scene.ply",
         scene_type="point_cloud",
         image_dir=tmp_path,
         camera_poses=[pose],
+        config=IngestRequest.model_fields["config"].default_factory(),
     )
-    # Bypass scene_path validator for this unit-level test
-    object.__setattr__(request, "scene_path", tmp_path / "scene.ply")
 
     mock_features = [_make_image_features(D=512)]
     with patch(
@@ -90,12 +87,13 @@ def test_clip_lifting_errors_without_image_dir(tiny_point_cloud, tmp_path):
     from python.api.schemas import IngestRequest
     from python.utils.errors import IngestionError
 
-    request = IngestRequest(
+    request = IngestRequest.model_construct(
         scene_path=tmp_path / "scene.ply",
         scene_type="point_cloud",
         image_dir=None,
+        camera_poses=None,
+        config=IngestRequest.model_fields["config"].default_factory(),
     )
-    object.__setattr__(request, "scene_path", tmp_path / "scene.ply")
 
     with pytest.raises(IngestionError, match="image_dir is required"):
         _lift_features(tiny_point_cloud, request)
@@ -110,13 +108,13 @@ def test_clip_lifting_synthesizes_poses_when_absent(tiny_point_cloud, tmp_path):
     img_file = tmp_path / "frame_000.jpg"
     img_file.write_bytes(b"")
 
-    request = IngestRequest(
+    request = IngestRequest.model_construct(
         scene_path=tmp_path / "scene.ply",
         scene_type="point_cloud",
         image_dir=tmp_path,
         camera_poses=None,
+        config=IngestRequest.model_fields["config"].default_factory(),
     )
-    object.__setattr__(request, "scene_path", tmp_path / "scene.ply")
 
     mock_features = [_make_image_features(D=512)]
     with patch(

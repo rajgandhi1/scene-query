@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +14,7 @@ from python.feature_lifting.clip_extractor import CLIPExtractor
 from python.feature_lifting.feature_projector import CameraPose, ProjectorFactory
 from python.feature_store.index import FeatureIndex
 from python.feature_store.persistence import IndexPersistence
-from python.ingestion.loaders import GaussianSplat, PointCloud, Scene, SceneLoaderFactory
+from python.ingestion.loaders import PointCloud, Scene, SceneLoaderFactory
 from python.ingestion.validators import SceneValidator
 from python.utils.errors import IngestionError, ValidationError
 from python.utils.logging import get_logger
@@ -22,7 +22,7 @@ from python.utils.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-_scene_registry: dict[str, dict] = {}
+_scene_registry: dict[str, dict[str, object]] = {}
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -63,7 +63,7 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
             "primitive_count": len(scene),
             "feature_dim": features.shape[1],
             "source_path": str(request.scene_path),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
         logger.info("Scene %s ingested: %d primitives, dim=%d", scene_id, len(scene), features.shape[1])
@@ -208,5 +208,5 @@ def _synthesize_orbital_poses(
     return poses
 
 
-def get_scene_registry() -> dict[str, dict]:
+def get_scene_registry() -> dict[str, dict[str, object]]:
     return _scene_registry
