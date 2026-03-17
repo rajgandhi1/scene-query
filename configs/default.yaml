@@ -15,7 +15,7 @@ models:
   visual_encoder: "ViT-B-32"       # swap to "ViT-L-14" for higher quality
   encoder_pretrained: "openai"
   feature_dim: 512                  # must match visual_encoder output dim
-  segmentation: "sam-vit-h"
+  segmentation: "models/weights/sam_vit_h_4b8939.pth"
   detection: "grounding-dino-base"
   depth: "vitl"
 

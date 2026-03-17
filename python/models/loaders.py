@@ -50,7 +50,7 @@ class SAMLoader(BaseModelLoader):
         try:
             from segment_anything import SamPredictor, sam_model_registry
 
-            checkpoint = self.config.get("checkpoint", "sam_vit_h_4b8939.pth")
+            checkpoint = self.config.get("checkpoint", "models/weights/sam_vit_h_4b8939.pth")
             model_type = self.config.get("model_type", "vit_h")
             sam = sam_model_registry[model_type](checkpoint=checkpoint)
             sam = sam.to(self.device)
