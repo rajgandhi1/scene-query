@@ -55,6 +55,7 @@ class IngestionConfig(BaseModel):
     run_depth: bool = True
     aggregation: Literal["mean", "max"] = "mean"
     clip_model: str = "ViT-B-32"
+    use_sam: bool = False  # refine tile features with SAM segment boundaries
 
 
 class BoundingBox3D(BaseModel):

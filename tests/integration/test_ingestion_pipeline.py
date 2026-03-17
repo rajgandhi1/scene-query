@@ -124,3 +124,58 @@ def test_clip_lifting_synthesizes_poses_when_absent(tiny_point_cloud, tmp_path):
 
     assert features.shape[0] == len(tiny_point_cloud)
     assert features.shape[1] == 512
+
+
+@pytest.mark.integration
+def test_clip_lifting_with_sam_refinement(tiny_point_cloud, tmp_path):
+    """SAM refinement path produces the same shape as plain CLIP lifting."""
+    from unittest.mock import MagicMock
+
+    from python.api.routes.ingest import _lift_features
+    from python.api.schemas import CameraPoseInput, IngestionConfig, IngestRequest
+    from python.feature_lifting.sam_lifter import SAMMask
+
+    from PIL import Image as PILImage
+
+    img_file = tmp_path / "frame_000.jpg"
+    PILImage.fromarray(np.zeros((224, 224, 3), dtype=np.uint8)).save(img_file)
+
+    pose = CameraPoseInput(
+        R=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        t=[0.0, 0.0, 3.0],
+        fx=112.0, fy=112.0,
+        cx=112.0, cy=112.0,
+        width=224, height=224,
+    )
+    config = IngestionConfig(use_sam=True)
+    request = IngestRequest.model_construct(
+        scene_path=tmp_path / "scene.ply",
+        scene_type="point_cloud",
+        image_dir=tmp_path,
+        camera_poses=[pose],
+        config=config,
+    )
+
+    mock_clip_features = [_make_image_features(D=512)]
+
+    # Synthetic SAM mask covering the top-left 2×2 tiles
+    H, W = 224, 224
+    mask_array = np.zeros((H, W), dtype=bool)
+    mask_array[:112, :112] = True
+    mock_masks = [SAMMask(mask=mask_array, area=int(mask_array.sum()), bbox=(0, 0, 112, 112), score=0.95)]
+
+    mock_sam = MagicMock()
+    mock_sam.segment_image.return_value = mock_masks
+    mock_sam.refine_image_features.side_effect = lambda feats, masks: feats  # pass-through
+
+    with (
+        patch("python.api.routes.ingest.CLIPExtractor.extract", return_value=mock_clip_features),
+        patch("python.api.routes.ingest.SAMLifter", return_value=mock_sam),
+    ):
+        features = _lift_features(tiny_point_cloud, request)
+
+    assert features.shape == (len(tiny_point_cloud), 512)
+    assert features.dtype == np.float32
+    # SAMLifter methods must have been called once per image
+    mock_sam.segment_image.assert_called_once()
+    mock_sam.refine_image_features.assert_called_once()

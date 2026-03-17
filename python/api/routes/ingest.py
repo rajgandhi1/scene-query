@@ -10,8 +10,9 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 
 from python.api.schemas import IngestRequest, IngestResponse
-from python.feature_lifting.clip_extractor import CLIPExtractor
+from python.feature_lifting.clip_extractor import CLIPExtractor, ImageFeatures
 from python.feature_lifting.feature_projector import CameraPose, ProjectorFactory
+from python.feature_lifting.sam_lifter import SAMLifter
 from python.feature_store.index import FeatureIndex
 from python.feature_store.persistence import IndexPersistence
 from python.ingestion.loaders import PointCloud, Scene, SceneLoaderFactory
@@ -119,6 +120,9 @@ def _lift_features(scene: Scene, request: IngestRequest) -> np.ndarray:
     extractor = CLIPExtractor()
     features_2d = extractor.extract(image_paths)
 
+    if request.config.use_sam:
+        features_2d = _refine_with_sam(features_2d, image_paths)
+
     if request.camera_poses is not None:
         if len(request.camera_poses) != len(image_paths):
             raise IngestionError(
@@ -159,6 +163,42 @@ def _lift_features(scene: Scene, request: IngestRequest) -> np.ndarray:
         "Feature lifting complete: %d primitives × dim=%d", features.shape[0], features.shape[1]
     )
     return features
+
+
+def _refine_with_sam(
+    features_2d: list[ImageFeatures],
+    image_paths: list[Path],
+) -> list[ImageFeatures]:
+    """
+    Refine per-image tile features with SAM segment boundaries.
+
+    Loads each source image, runs SAM automatic mask generation, then replaces
+    each tile's feature with the average of all tiles sharing the same segment.
+    Falls back to the original features for any image that fails.
+
+    Args:
+        features_2d: List of ImageFeatures from CLIPExtractor.extract().
+        image_paths: Corresponding source image paths (same order).
+
+    Returns:
+        New list of ImageFeatures with SAM-refined embeddings.
+    """
+    from PIL import Image as PILImage
+
+    lifter = SAMLifter()
+    refined: list[ImageFeatures] = []
+
+    for img_path, img_feats in zip(image_paths, features_2d, strict=True):
+        try:
+            image_rgb = np.array(PILImage.open(img_path).convert("RGB"))
+            masks = lifter.segment_image(image_rgb)
+            refined.append(lifter.refine_image_features(img_feats, masks))
+            logger.debug("SAM refined %s: %d masks applied", img_path.name, len(masks))
+        except Exception as exc:
+            logger.warning("SAM refinement failed for %s, using raw CLIP features: %s", img_path.name, exc)
+            refined.append(img_feats)
+
+    return refined
 
 
 def _synthesize_orbital_poses(
