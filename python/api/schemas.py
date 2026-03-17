@@ -37,6 +37,19 @@ class CameraParams(BaseModel):
     dist_coeffs: list[float] = Field(default_factory=list)
 
 
+class CameraPoseInput(BaseModel):
+    """JSON-serializable camera extrinsics + intrinsics for one view."""
+
+    R: list[list[float]]  # 3×3 rotation matrix (world → camera), row-major
+    t: list[float]        # (3,) translation (world → camera)
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    width: int
+    height: int
+
+
 class IngestionConfig(BaseModel):
     run_undistortion: bool = True
     run_depth: bool = True
@@ -58,7 +71,9 @@ class BoundingBox3D(BaseModel):
 class IngestRequest(BaseModel):
     scene_path: Path
     scene_type: Literal["gaussian_splat", "point_cloud", "mesh", "nerf"]
+    image_dir: Path | None = None          # directory of source images for CLIP lifting
     camera_params: CameraParams | None = None
+    camera_poses: list[CameraPoseInput] | None = None  # one pose per image in image_dir
     config: IngestionConfig = Field(default_factory=IngestionConfig)
 
     @field_validator("scene_path")

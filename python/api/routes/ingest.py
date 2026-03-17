@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+import numpy as np
+from fastapi import APIRouter, HTTPException
 
 from python.api.schemas import IngestRequest, IngestResponse
 from python.feature_lifting.clip_extractor import CLIPExtractor
-from python.feature_lifting.feature_projector import ProjectorFactory
+from python.feature_lifting.feature_projector import CameraPose, ProjectorFactory
 from python.feature_store.index import FeatureIndex
 from python.feature_store.persistence import IndexPersistence
-from python.ingestion.loaders import SceneLoaderFactory
+from python.ingestion.loaders import PointCloud, Scene, SceneLoaderFactory
 from python.ingestion.validators import SceneValidator
 from python.utils.errors import IngestionError, ValidationError
 from python.utils.logging import get_logger
@@ -20,7 +22,7 @@ from python.utils.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-_scene_registry: dict[str, dict] = {}
+_scene_registry: dict[str, dict[str, object]] = {}
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -43,9 +45,7 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
         scene = SceneLoaderFactory.load(request.scene_path)
         logger.info("Scene loaded: %d primitives", len(scene))
 
-        # 3. Feature lifting
-        # Phase 1: image-based lifting requires associated images.
-        # For pose-free point clouds, we use color-based pseudo-features.
+        # 3. Feature lifting: CLIP features extracted from images, projected onto 3D primitives
         features = _lift_features(scene, request)
 
         # 4. Build and persist index
@@ -63,7 +63,7 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
             "primitive_count": len(scene),
             "feature_dim": features.shape[1],
             "source_path": str(request.scene_path),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
         logger.info("Scene %s ingested: %d primitives, dim=%d", scene_id, len(scene), features.shape[1])
@@ -81,39 +81,132 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-def _lift_features(scene, request: IngestRequest):
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _lift_features(scene: Scene, request: IngestRequest) -> np.ndarray:
     """
-    Extract and project features for a scene.
+    Extract dense CLIP features from source images and project onto 3D primitives.
 
-    Phase 1: uses point cloud colors as a proxy when no image paths are provided.
-    Full image-based lifting will be wired in Phase 2.
+    Requires ``request.image_dir`` to point to a directory of source images.
+    Camera poses are used when provided via ``request.camera_poses``; otherwise
+    synthetic orbital cameras are generated around the scene bounding box.
+
+    Returns:
+        (N, D) float32 L2-normalized feature matrix, where D is the CLIP model's
+        output dimension (e.g. 512 for ViT-B/32, 768 for ViT-L/14).
     """
-    import numpy as np
-    from python.ingestion.loaders import PointCloud, GaussianSplat
+    if request.image_dir is None:
+        raise IngestionError(
+            "image_dir is required for CLIP feature lifting. "
+            "Provide a directory containing source images for this scene."
+        )
 
-    if isinstance(scene, PointCloud):
-        # Phase 1 fallback: use RGB colors as crude 3-dim features,
-        # padded/projected to CLIP dim via a random projection.
-        # Replace with image-based lifting in Phase 2.
-        rng = np.random.default_rng(seed=42)
-        D = 512
-        proj = rng.standard_normal((3, D)).astype(np.float32)
-        proj /= np.linalg.norm(proj, axis=0, keepdims=True)
-        raw = scene.colors @ proj  # (N, D)
-        norms = np.linalg.norm(raw, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
-        return (raw / norms).astype(np.float32)
+    image_dir = Path(request.image_dir)
+    if not image_dir.is_dir():
+        raise IngestionError(f"image_dir does not exist or is not a directory: {image_dir}")
 
-    elif isinstance(scene, GaussianSplat):
-        rng = np.random.default_rng(seed=42)
-        D = 512
-        N = len(scene)
-        features = rng.standard_normal((N, D)).astype(np.float32)
-        norms = np.linalg.norm(features, axis=1, keepdims=True)
-        return features / norms
+    image_paths = sorted(
+        p for p in image_dir.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS
+    )
+    if not image_paths:
+        raise IngestionError(
+            f"No images found in {image_dir}. "
+            f"Supported formats: {sorted(_IMAGE_EXTENSIONS)}"
+        )
 
-    raise IngestionError(f"Unsupported scene type: {type(scene)}")
+    logger.info("Extracting CLIP features from %d images in %s", len(image_paths), image_dir)
+    extractor = CLIPExtractor()
+    features_2d = extractor.extract(image_paths)
+
+    if request.camera_poses is not None:
+        if len(request.camera_poses) != len(image_paths):
+            raise IngestionError(
+                f"camera_poses length ({len(request.camera_poses)}) must match "
+                f"number of images found ({len(image_paths)})"
+            )
+        camera_poses = [
+            CameraPose(
+                R=np.array(cp.R, dtype=np.float32),
+                t=np.array(cp.t, dtype=np.float32),
+                fx=cp.fx,
+                fy=cp.fy,
+                cx=cp.cx,
+                cy=cp.cy,
+                width=cp.width,
+                height=cp.height,
+            )
+            for cp in request.camera_poses
+        ]
+    else:
+        logger.warning(
+            "No camera_poses provided — synthesizing %d orbital cameras around scene AABB. "
+            "Supply camera_poses for accurate per-view feature correspondence.",
+            len(image_paths),
+        )
+        camera_poses = _synthesize_orbital_poses(
+            scene, n_views=len(image_paths), image_hw=features_2d[0].image_hw
+        )
+
+    projector = ProjectorFactory.get(request.scene_type)
+    features = projector.project(
+        features_2d,
+        camera_poses,
+        scene,
+        aggregation=request.config.aggregation,
+    )
+    logger.info(
+        "Feature lifting complete: %d primitives × dim=%d", features.shape[0], features.shape[1]
+    )
+    return features
 
 
-def get_scene_registry() -> dict[str, dict]:
+def _synthesize_orbital_poses(
+    scene: Scene,
+    n_views: int,
+    image_hw: tuple[int, int],
+) -> list[CameraPose]:
+    """
+    Generate orbital cameras uniformly distributed in azimuth around the scene AABB.
+
+    Each camera is placed at twice the scene radius from its center and oriented
+    to look inward. Used as a pose-free fallback when ``camera_poses`` is absent.
+    """
+    pts = scene.points if isinstance(scene, PointCloud) else scene.means
+    center = pts.mean(axis=0)
+    radius = float(np.linalg.norm(pts - center, axis=1).max()) * 2.0
+    radius = max(radius, 1e-3)
+
+    H, W = image_hw
+    fx = fy = float(max(W, H))
+    cx, cy = W / 2.0, H / 2.0
+
+    poses: list[CameraPose] = []
+    for i in range(n_views):
+        azimuth = 2.0 * np.pi * i / n_views
+        cam_pos = center + radius * np.array(
+            [np.cos(azimuth), 0.0, np.sin(azimuth)], dtype=np.float32
+        )
+
+        forward = center - cam_pos
+        forward = forward / np.linalg.norm(forward)
+
+        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        if abs(float(np.dot(forward, world_up))) > 0.99:
+            world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+        right = np.cross(forward, world_up)
+        right = right / np.linalg.norm(right)
+        up = np.cross(right, forward)
+
+        # OpenCV convention: rows are right, down (-up), forward
+        R = np.stack([right, -up, forward], axis=0).astype(np.float32)
+        t = (-R @ cam_pos).astype(np.float32)
+
+        poses.append(CameraPose(R=R, t=t, fx=fx, fy=fy, cx=cx, cy=cy, width=W, height=H))
+
+    return poses
+
+
+def get_scene_registry() -> dict[str, dict[str, object]]:
     return _scene_registry
