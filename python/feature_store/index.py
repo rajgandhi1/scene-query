@@ -63,17 +63,27 @@ class FeatureIndex:
         self._index: "faiss.Index | None" = None  # type: ignore[name-defined]
         self._n_primitives: int = 0
         self._feature_dim: int = 0
+        self._positions: np.ndarray | None = None  # (N, 3) float32 XYZ per primitive
 
-    def build(self, features: np.ndarray) -> None:
+    def build(self, features: np.ndarray, positions: np.ndarray | None = None) -> None:
         """
         Build the index from a feature matrix.
 
         Args:
             features: (N, D) float32 per-primitive embeddings.
+            positions: (N, 3) float32 XYZ coordinates for each primitive. Optional
+                       but required for spatial reranking and position_3d responses.
         """
         if features.ndim != 2:
             raise FeatureStoreError(f"Expected 2D array, got shape {features.shape}")
         self._n_primitives, self._feature_dim = features.shape
+        if positions is not None:
+            if positions.shape != (self._n_primitives, 3):
+                raise FeatureStoreError(
+                    f"positions shape {positions.shape} does not match "
+                    f"features shape {features.shape}"
+                )
+            self._positions = positions.astype(np.float32)
         self._index = build_index(features)
 
     def search(
@@ -107,6 +117,11 @@ class FeatureIndex:
             scores, ids = scores[mask], ids[mask]
 
         return ids.astype(np.int64), scores.astype(np.float32)
+
+    @property
+    def positions(self) -> np.ndarray | None:
+        """(N, 3) float32 XYZ positions, or None if not stored."""
+        return self._positions
 
     @property
     def n_primitives(self) -> int:

@@ -50,12 +50,13 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
         # 3. Feature lifting: CLIP features extracted from images, projected onto 3D primitives
         features = _lift_features(scene, request)
 
-        # 4. Build and persist index
+        # 4. Build and persist index (positions stored alongside FAISS index)
         from python.api.app import get_persistence
         persistence: IndexPersistence = get_persistence()
 
+        positions = scene.points if isinstance(scene, PointCloud) else scene.means
         feature_index = FeatureIndex(scene_id)
-        feature_index.build(features)
+        feature_index.build(features, positions)
         persistence.save(feature_index)
 
         # 5. Register scene metadata
