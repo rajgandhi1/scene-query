@@ -50,17 +50,20 @@ async def query_scene(request: QueryRequest) -> QueryResponse:
         # 3. Optional spatial reranking
         if request.rerank and results:
             reranker = SpatialReranker()
-            # Positions would come from scene registry — placeholder for Phase 2
-            import numpy as np
-            dummy_positions = np.zeros((max(r.primitive_id for r in results) + 1, 3), dtype=np.float32)
-            results = reranker.rerank(results, dummy_positions)
+            positions = searcher.get_positions(request.scene_id)
+            if positions is not None:
+                results = reranker.rerank(results, positions)
+            else:
+                logger.warning(
+                    "Spatial reranking skipped for scene '%s': no positions stored", request.scene_id
+                )
 
         # 4. Build response
         matches = [
             QueryMatch(
                 primitive_id=r.primitive_id,
                 score=r.score,
-                position_3d=(0.0, 0.0, 0.0),  # populated from scene in Phase 2
+                position_3d=r.position_3d,
             )
             for r in results
         ]
