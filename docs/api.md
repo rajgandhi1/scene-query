@@ -20,10 +20,33 @@ Ingest a scene file and build a searchable feature index.
     "run_undistortion": true,
     "run_depth": true,
     "aggregation": "mean",
-    "clip_model": "ViT-B-32"
+    "clip_model": "ViT-B-32",
+    "use_sam": false,
+    "grounding_dino_prompts": null
   }
 }
 ```
+
+**`config.grounding_dino_prompts` — Grounding DINO pre-labelling**
+
+When set to a non-empty list of strings, Grounding DINO localises the listed
+object classes in each source image before dense CLIP feature lifting runs.
+SAM then refines each bounding box into a precise per-object mask, so only
+tiles that overlap a detected region are updated. This significantly reduces
+background contamination in cluttered scenes.
+
+Multiple class names are joined with ` . ` internally (Grounding DINO caption
+format), so you can list them separately:
+
+```json
+"grounding_dino_prompts": ["chair", "table", "sofa"]
+```
+
+`grounding_dino_prompts` is independent of `use_sam`: both can be enabled
+together (SAM auto-segments first, then DINO-prompted masks narrow regions
+further) or used individually.
+
+Requires `groundingdino` and SAM model weights. See `scripts/download_models.sh`.
 
 **Response 200**
 ```json

@@ -127,6 +127,123 @@ def test_clip_lifting_synthesizes_poses_when_absent(tiny_point_cloud, tmp_path):
 
 
 @pytest.mark.integration
+def test_clip_lifting_with_grounding_dino(tiny_point_cloud, tmp_path):
+    """DINO+SAM refinement path produces the same shape as plain CLIP lifting."""
+    from unittest.mock import MagicMock, patch
+
+    from python.api.routes.ingest import _lift_features
+    from python.api.schemas import CameraPoseInput, IngestionConfig, IngestRequest
+    from python.feature_lifting.grounding_dino import Detection
+    from python.feature_lifting.sam_lifter import SAMMask
+
+    from PIL import Image as PILImage
+
+    img_file = tmp_path / "frame_000.jpg"
+    PILImage.fromarray(np.zeros((224, 224, 3), dtype=np.uint8)).save(img_file)
+
+    pose = CameraPoseInput(
+        R=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        t=[0.0, 0.0, 3.0],
+        fx=112.0, fy=112.0,
+        cx=112.0, cy=112.0,
+        width=224, height=224,
+    )
+    config = IngestionConfig(grounding_dino_prompts=["chair", "table"])
+    request = IngestRequest.model_construct(
+        scene_path=tmp_path / "scene.ply",
+        scene_type="point_cloud",
+        image_dir=tmp_path,
+        camera_poses=[pose],
+        config=config,
+    )
+
+    mock_clip_features = [_make_image_features(D=512)]
+
+    # Synthetic DINO detection covering the top-left quadrant
+    H, W = 224, 224
+    mask_array = np.zeros((H, W), dtype=bool)
+    mask_array[:112, :112] = True
+
+    mock_detection = Detection(
+        label="chair",
+        score=0.85,
+        bbox_xyxy=(0.0, 0.0, 112.0, 112.0),
+        mask=mask_array,
+    )
+
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = [mock_detection]
+    mock_detector.refine_with_sam.return_value = [mock_detection]
+
+    mock_lifter = MagicMock()
+    mock_lifter.refine_image_features.side_effect = lambda feats, masks: feats
+
+    with (
+        patch("python.api.routes.ingest.CLIPExtractor.extract", return_value=mock_clip_features),
+        patch("python.api.routes.ingest.GroundingDINODetector", return_value=mock_detector),
+        patch("python.api.routes.ingest.SAMLifter", return_value=mock_lifter),
+    ):
+        features = _lift_features(tiny_point_cloud, request)
+
+    assert features.shape == (len(tiny_point_cloud), 512)
+    assert features.dtype == np.float32
+    mock_detector.detect.assert_called_once()
+    # Verify the caption joins prompts with " . "
+    call_args = mock_detector.detect.call_args
+    assert call_args[0][1] == "chair . table"
+    mock_detector.refine_with_sam.assert_called_once()
+    mock_lifter.refine_image_features.assert_called_once()
+
+
+@pytest.mark.integration
+def test_clip_lifting_with_dino_no_detections(tiny_point_cloud, tmp_path):
+    """When DINO finds no objects, features fall back to raw CLIP output unchanged."""
+    from unittest.mock import MagicMock, patch
+
+    from python.api.routes.ingest import _lift_features
+    from python.api.schemas import CameraPoseInput, IngestionConfig, IngestRequest
+
+    from PIL import Image as PILImage
+
+    img_file = tmp_path / "frame_000.jpg"
+    PILImage.fromarray(np.zeros((224, 224, 3), dtype=np.uint8)).save(img_file)
+
+    pose = CameraPoseInput(
+        R=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        t=[0.0, 0.0, 3.0],
+        fx=112.0, fy=112.0,
+        cx=112.0, cy=112.0,
+        width=224, height=224,
+    )
+    config = IngestionConfig(grounding_dino_prompts=["nonexistent_object"])
+    request = IngestRequest.model_construct(
+        scene_path=tmp_path / "scene.ply",
+        scene_type="point_cloud",
+        image_dir=tmp_path,
+        camera_poses=[pose],
+        config=config,
+    )
+
+    mock_clip_features = [_make_image_features(D=512)]
+
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = []  # nothing found
+
+    mock_lifter = MagicMock()
+
+    with (
+        patch("python.api.routes.ingest.CLIPExtractor.extract", return_value=mock_clip_features),
+        patch("python.api.routes.ingest.GroundingDINODetector", return_value=mock_detector),
+        patch("python.api.routes.ingest.SAMLifter", return_value=mock_lifter),
+    ):
+        features = _lift_features(tiny_point_cloud, request)
+
+    assert features.shape == (len(tiny_point_cloud), 512)
+    # refine_image_features must NOT be called when there are no detections
+    mock_lifter.refine_image_features.assert_not_called()
+
+
+@pytest.mark.integration
 def test_clip_lifting_with_sam_refinement(tiny_point_cloud, tmp_path):
     """SAM refinement path produces the same shape as plain CLIP lifting."""
     from unittest.mock import MagicMock

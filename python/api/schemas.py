@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -56,6 +56,19 @@ class IngestionConfig(BaseModel):
     aggregation: Literal["mean", "max"] = "mean"
     clip_model: str = "ViT-B-32"
     use_sam: bool = False  # refine tile features with SAM segment boundaries
+    grounding_dino_prompts: list[str] | None = None  # pre-label coarse regions before feature lifting
+
+    @field_validator("grounding_dino_prompts")
+    @classmethod
+    def validate_prompts(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if len(v) == 0:
+            raise ValueError("grounding_dino_prompts must contain at least one prompt")
+        for prompt in v:
+            if not prompt.strip():
+                raise ValueError("Each grounding_dino_prompts entry must be a non-empty string")
+        return v
 
 
 class BoundingBox3D(BaseModel):

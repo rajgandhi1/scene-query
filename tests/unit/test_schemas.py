@@ -41,6 +41,34 @@ def test_query_request_threshold_bounds():
         QueryRequest(scene_id="abc", query="chair", threshold=1.1)
 
 
+def test_ingestion_config_grounding_dino_prompts_valid():
+    from python.api.schemas import IngestionConfig
+
+    cfg = IngestionConfig(grounding_dino_prompts=["chair", "table"])
+    assert cfg.grounding_dino_prompts == ["chair", "table"]
+
+
+def test_ingestion_config_grounding_dino_prompts_none_by_default():
+    from python.api.schemas import IngestionConfig
+
+    cfg = IngestionConfig()
+    assert cfg.grounding_dino_prompts is None
+
+
+def test_ingestion_config_grounding_dino_prompts_empty_list_fails():
+    from python.api.schemas import IngestionConfig
+
+    with pytest.raises(ValidationError, match="at least one prompt"):
+        IngestionConfig(grounding_dino_prompts=[])
+
+
+def test_ingestion_config_grounding_dino_prompts_blank_entry_fails():
+    from python.api.schemas import IngestionConfig
+
+    with pytest.raises(ValidationError, match="non-empty string"):
+        IngestionConfig(grounding_dino_prompts=["chair", "  "])
+
+
 def test_ingest_response_serialization():
     from python.api.schemas import IngestResponse
 

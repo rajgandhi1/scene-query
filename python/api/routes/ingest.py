@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException
 from python.api.schemas import IngestRequest, IngestResponse
 from python.feature_lifting.clip_extractor import CLIPExtractor, ImageFeatures
 from python.feature_lifting.feature_projector import CameraPose, ProjectorFactory
-from python.feature_lifting.sam_lifter import SAMLifter
+from python.feature_lifting.grounding_dino import GroundingDINODetector
+from python.feature_lifting.sam_lifter import SAMLifter, SAMMask
 from python.feature_store.index import FeatureIndex
 from python.feature_store.persistence import IndexPersistence
 from python.ingestion.loaders import PointCloud, Scene, SceneLoaderFactory
@@ -123,6 +124,9 @@ def _lift_features(scene: Scene, request: IngestRequest) -> np.ndarray:
     if request.config.use_sam:
         features_2d = _refine_with_sam(features_2d, image_paths)
 
+    if request.config.grounding_dino_prompts:
+        features_2d = _refine_with_grounding_dino(features_2d, image_paths, request.config.grounding_dino_prompts)
+
     if request.camera_poses is not None:
         if len(request.camera_poses) != len(image_paths):
             raise IngestionError(
@@ -196,6 +200,79 @@ def _refine_with_sam(
             logger.debug("SAM refined %s: %d masks applied", img_path.name, len(masks))
         except Exception as exc:
             logger.warning("SAM refinement failed for %s, using raw CLIP features: %s", img_path.name, exc)
+            refined.append(img_feats)
+
+    return refined
+
+
+def _bbox_xyxy_to_xywh(bbox: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = bbox
+    return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+
+
+def _refine_with_grounding_dino(
+    features_2d: list[ImageFeatures],
+    image_paths: list[Path],
+    prompts: list[str],
+) -> list[ImageFeatures]:
+    """
+    Refine per-image tile features by masking to Grounding DINO detections.
+
+    For each image, Grounding DINO is run with the joined prompt caption to
+    localise coarse regions. SAM then refines each bounding box into a precise
+    mask. Only tiles that fall inside at least one detected region are updated;
+    tiles outside all masks retain their original CLIP features.
+
+    This is most useful for cluttered scenes where dense lifting would mix
+    foreground object features with irrelevant background regions.
+
+    Args:
+        features_2d: Per-image CLIP tile embeddings from CLIPExtractor.
+        image_paths: Source image paths in the same order as features_2d.
+        prompts: Text descriptions of target objects, e.g. ["chair", "table"].
+                 Multiple prompts are joined with " . " (DINO caption format).
+
+    Returns:
+        New list of ImageFeatures with DINO+SAM-masked embeddings.
+    """
+    from PIL import Image as PILImage
+
+    caption = " . ".join(prompts)
+    detector = GroundingDINODetector()
+    lifter = SAMLifter()
+    refined: list[ImageFeatures] = []
+
+    for img_path, img_feats in zip(image_paths, features_2d, strict=True):
+        try:
+            image_rgb = np.array(PILImage.open(img_path).convert("RGB"))
+            detections = detector.detect(image_rgb, caption)
+            if not detections:
+                logger.debug("Grounding DINO found no objects in %s for caption '%s'", img_path.name, caption)
+                refined.append(img_feats)
+                continue
+
+            detections = detector.refine_with_sam(image_rgb, detections)
+            sam_masks = [
+                SAMMask(
+                    mask=det.mask,
+                    area=int(det.mask.sum()),
+                    bbox=_bbox_xyxy_to_xywh(det.bbox_xyxy),
+                    score=det.score,
+                )
+                for det in detections
+                if det.mask is not None
+            ]
+            if sam_masks:
+                refined.append(lifter.refine_image_features(img_feats, sam_masks))
+                logger.debug(
+                    "DINO+SAM refined %s: %d detections applied", img_path.name, len(sam_masks)
+                )
+            else:
+                refined.append(img_feats)
+        except Exception as exc:
+            logger.warning(
+                "DINO+SAM refinement failed for %s, using raw CLIP features: %s", img_path.name, exc
+            )
             refined.append(img_feats)
 
     return refined
