@@ -8,4 +8,6 @@ pub mod ipc;
 pub mod viewer;
 
 pub use ipc::receiver::IpcReceiver;
-pub use viewer::highlight::HighlightOverlay;
+pub use viewer::highlight::{ColorMap, HighlightOverlay};
+pub use viewer::overlay::{ColorBuffer, QueryOverlay};
+pub use viewer::render_loop::ViewerLoop;
