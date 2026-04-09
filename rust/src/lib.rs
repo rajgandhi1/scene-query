@@ -11,3 +11,4 @@ pub use ipc::receiver::IpcReceiver;
 pub use viewer::highlight::{ColorMap, HighlightOverlay};
 pub use viewer::overlay::{ColorBuffer, QueryOverlay};
 pub use viewer::render_loop::ViewerLoop;
+pub use viewer::threecrate_buffer::{PointVertexBuffer, DEFAULT_COLOR};

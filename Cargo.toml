@@ -10,3 +10,4 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+threecrate-gpu = "0.7"
