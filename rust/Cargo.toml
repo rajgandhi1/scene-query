@@ -12,6 +12,10 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+threecrate-gpu = { workspace = true }
+pollster = "0.4"
+nalgebra = "0.34"
+winit = "0.30"
 
 [lib]
 name = "scene_query_viewer"
