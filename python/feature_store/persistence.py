@@ -100,6 +100,14 @@ class IndexPersistence:
         except Exception as exc:
             raise FeatureStoreError(f"Failed to load index for '{scene_id}': {exc}") from exc
 
+    def list_scenes(self) -> list[str]:
+        """Return all scene IDs that have a saved feature index."""
+        return [
+            d.name
+            for d in sorted(self._root.iterdir())
+            if d.is_dir() and (d / INDEX_FILENAME).exists()
+        ]
+
     def exists(self, scene_id: str) -> bool:
         return self._index_path(scene_id).exists()
 

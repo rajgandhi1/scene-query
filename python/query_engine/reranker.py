@@ -65,6 +65,10 @@ class SpatialReranker:
         # Sort by adjusted score
         order = np.argsort(-adjusted_scores)
         return [
-            SearchResult(primitive_id=int(ids[i]), score=float(adjusted_scores[i]))
+            SearchResult(
+                primitive_id=int(ids[i]),
+                score=float(adjusted_scores[i]),
+                position_3d=results[i].position_3d,  # preserve original position
+            )
             for i in order
         ]
