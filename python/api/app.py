@@ -8,7 +8,8 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from python.api.routes import ingest, query, scene
+from python.agent.tools import ToolExecutor
+from python.api.routes import agent, ingest, query, scene
 from python.api.schemas import settings
 from python.feature_store.persistence import IndexPersistence
 from python.utils.errors import IngestionError, QueryError, SceneQueryError
@@ -20,6 +21,7 @@ logger = get_logger(__name__)
 # Module-level singletons (set during lifespan startup)
 _persistence: IndexPersistence | None = None
 _viewer_bridge: ViewerBridge | None = None
+_tool_executor: ToolExecutor | None = None
 
 
 def get_persistence() -> IndexPersistence:
@@ -32,9 +34,20 @@ def get_viewer_bridge() -> ViewerBridge | None:
     return _viewer_bridge
 
 
+def get_tool_executor() -> ToolExecutor:
+    """Return the shared ToolExecutor singleton (Factor 5: unify state).
+
+    Sharing one instance means the Searcher's in-memory index cache is
+    preserved across all requests instead of being discarded after each call.
+    """
+    if _tool_executor is None:
+        raise RuntimeError("App not started — tool executor not initialized")
+    return _tool_executor
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global _persistence, _viewer_bridge
+    global _persistence, _viewer_bridge, _tool_executor
 
     configure_logging(level=settings.log_level)
     logger.info("scene-query starting up")
@@ -43,6 +56,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     _viewer_bridge = ViewerBridge(socket_path=settings.socket_path)
     await _viewer_bridge.connect()
+
+    _tool_executor = ToolExecutor(persistence=_persistence, viewer_bridge=_viewer_bridge)
 
     yield  # Application runs here
 
@@ -64,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest.router, prefix=prefix, tags=["ingestion"])
     app.include_router(query.router, prefix=prefix, tags=["query"])
     app.include_router(scene.router, prefix=prefix, tags=["scene"])
+    app.include_router(agent.router, prefix=prefix, tags=["agent"])
 
     # Error handlers
     @app.exception_handler(IngestionError)

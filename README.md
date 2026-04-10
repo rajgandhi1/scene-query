@@ -29,10 +29,20 @@ curl -X POST http://localhost:8000/api/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{"scene_path": "/data/garden.ply", "scene_type": "point_cloud"}'
 
-# Query it
+# Single query
 curl -X POST http://localhost:8000/api/v1/query \
   -H "Content-Type: application/json" \
   -d '{"scene_id": "<id>", "query": "red chair", "top_k": 100}'
+
+# Agent — multi-turn, multi-step reasoning
+curl -X POST http://localhost:8000/api/v1/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Count all chairs in scene room1 and highlight the ones near the window"}'
+
+# Follow-up in the same conversation
+curl -X POST http://localhost:8000/api/v1/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How far apart are the two closest ones?", "session_id": "<id from above>"}'
 ```
 
 ## Supported Formats
@@ -55,14 +65,21 @@ Images / Point Cloud / Gaussian Splat
             ↓
     FAISS Feature Store
             ↓
-  Text Query → CLIP embedding → Similarity Search
+  Text Query → CLIP embedding → Similarity Search    ← single query
             ↓
   Highlighted output in threecrate viewer
+
+  — or —
+
+  Natural language goal → Agent (Qwen via Ollama)    ← multi-step
+     ↕ tool calls (query, count, highlight, measure)
+  Final natural language reply + viewer updated
 ```
 
 ## Tech Stack
 
 - **ML Pipeline**: Python 3.11+, CLIP (OpenCLIP), SAM, Grounding DINO
+- **Agent**: Qwen (via Ollama) — local open-source LLM with tool calling
 - **3D Viewer**: Rust (threecrate)
 - **Feature Store**: FAISS
 - **API**: FastAPI
