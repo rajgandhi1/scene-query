@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
-from python.api.schemas import QueryMatch, QueryRequest, QueryResponse
+from python.api._limiter import limiter
+from python.api.schemas import QueryMatch, QueryRequest, QueryResponse, settings
 from python.feature_store.persistence import IndexPersistence
 from python.query_engine.encoder import CLIPTextEncoder
 from python.query_engine.reranker import SpatialReranker
@@ -18,8 +20,14 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _query_rate_limit(*args: Any, **kwargs: Any) -> str:
+    """Return the current rate-limit string, read from settings at call time."""
+    return f"{settings.query_rate_limit}/minute"
+
+
 @router.post("/query", response_model=QueryResponse)
-async def query_scene(request: QueryRequest) -> QueryResponse:
+@limiter.limit(_query_rate_limit)
+async def query_scene(request: Request, body: QueryRequest) -> QueryResponse:
     """
     Query a scene with a text prompt.
 
@@ -27,7 +35,7 @@ async def query_scene(request: QueryRequest) -> QueryResponse:
     optionally sends highlights to the connected viewer.
     """
     t0 = time.perf_counter()
-    logger.info("Query scene=%s query='%s' top_k=%d", request.scene_id, request.query, request.top_k)
+    logger.info("Query scene=%s query='%s' top_k=%d", body.scene_id, body.query, body.top_k)
 
     try:
         from python.api.app import get_persistence, get_viewer_bridge
@@ -37,25 +45,25 @@ async def query_scene(request: QueryRequest) -> QueryResponse:
 
         # 1. Encode text query
         encoder = CLIPTextEncoder()
-        embedding = encoder.encode(request.query)
+        embedding = encoder.encode(body.query)
 
         # 2. Search
         results = searcher.search(
-            scene_id=request.scene_id,
+            scene_id=body.scene_id,
             query_embedding=embedding,
-            top_k=request.top_k,
-            threshold=request.threshold,
+            top_k=body.top_k,
+            threshold=body.threshold,
         )
 
         # 3. Optional spatial reranking
-        if request.rerank and results:
+        if body.rerank and results:
             reranker = SpatialReranker()
-            positions = searcher.get_positions(request.scene_id)
+            positions = searcher.get_positions(body.scene_id)
             if positions is not None:
                 results = reranker.rerank(results, positions)
             else:
                 logger.warning(
-                    "Spatial reranking skipped for scene '%s': no positions stored", request.scene_id
+                    "Spatial reranking skipped for scene '%s': no positions stored", body.scene_id
                 )
 
         # 4. Build response
@@ -84,8 +92,8 @@ async def query_scene(request: QueryRequest) -> QueryResponse:
         )
 
         return QueryResponse(
-            scene_id=request.scene_id,
-            query=request.query,
+            scene_id=body.scene_id,
+            query=body.query,
             matches=matches,
             query_time_ms=round(elapsed_ms, 2),
             viewer_updated=viewer_updated,
