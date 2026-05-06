@@ -5,10 +5,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from python.agent.tools import ToolExecutor
+from python.api._limiter import limiter
 from python.api.routes import agent, ingest, query, scene
 from python.api.schemas import settings
 from python.feature_store.persistence import IndexPersistence
@@ -66,6 +68,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await _viewer_bridge.close()
 
 
+async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    response = JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
+    response = request.app.state.limiter._inject_headers(
+        response, request.state.view_rate_limit
+    )
+    return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="scene-query",
@@ -73,6 +83,10 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Rate limiter state
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
     # Register routes
     prefix = "/api/v1"
