@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +25,32 @@ from python.utils.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-_scene_registry: dict[str, dict[str, object]] = {}
+
+class SceneRegistry:
+    """Thread-safe async scene registry backed by an asyncio.Lock."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, dict[str, object]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, scene_id: str) -> dict[str, object] | None:
+        async with self._lock:
+            return self._data.get(scene_id)
+
+    async def set(self, scene_id: str, meta: dict[str, object]) -> None:
+        async with self._lock:
+            self._data[scene_id] = meta
+
+    async def delete(self, scene_id: str) -> None:
+        async with self._lock:
+            del self._data[scene_id]
+
+    async def contains(self, scene_id: str) -> bool:
+        async with self._lock:
+            return scene_id in self._data
+
+
+_registry = SceneRegistry()
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -60,14 +86,14 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
         persistence.save(feature_index)
 
         # 5. Register scene metadata
-        _scene_registry[scene_id] = {
+        await _registry.set(scene_id, {
             "scene_id": scene_id,
             "scene_type": request.scene_type,
             "primitive_count": len(scene),
             "feature_dim": features.shape[1],
             "source_path": str(request.scene_path),
             "created_at": datetime.now(UTC).isoformat(),
-        }
+        })
 
         logger.info("Scene %s ingested: %d primitives, dim=%d", scene_id, len(scene), features.shape[1])
         return IngestResponse(
@@ -326,5 +352,5 @@ def _synthesize_orbital_poses(
     return poses
 
 
-def get_scene_registry() -> dict[str, dict[str, object]]:
-    return _scene_registry
+def get_scene_registry() -> SceneRegistry:
+    return _registry

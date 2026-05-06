@@ -18,9 +18,10 @@ async def get_scene(scene_id: str) -> SceneMetadata:
     from python.api.routes.ingest import get_scene_registry
 
     registry = get_scene_registry()
-    if scene_id not in registry:
+    meta = await registry.get(scene_id)
+    if meta is None:
         raise HTTPException(status_code=404, detail=f"Scene '{scene_id}' not found")
-    return SceneMetadata(**registry[scene_id])
+    return SceneMetadata(**meta)
 
 
 @router.get("/scene/{scene_id}/features")
@@ -30,15 +31,16 @@ async def get_scene_features(scene_id: str) -> dict:
     from python.api.routes.ingest import get_scene_registry
 
     registry = get_scene_registry()
-    if scene_id not in registry:
+    meta = await registry.get(scene_id)
+    if meta is None:
         raise HTTPException(status_code=404, detail=f"Scene '{scene_id}' not found")
 
     persistence = get_persistence()
     return {
         "scene_id": scene_id,
         "index_exists": persistence.exists(scene_id),
-        "primitive_count": registry[scene_id]["primitive_count"],
-        "feature_dim": registry[scene_id]["feature_dim"],
+        "primitive_count": meta["primitive_count"],
+        "feature_dim": meta["feature_dim"],
     }
 
 
@@ -49,12 +51,12 @@ async def delete_scene(scene_id: str) -> dict:
     from python.api.routes.ingest import get_scene_registry
 
     registry = get_scene_registry()
-    if scene_id not in registry:
+    if not await registry.contains(scene_id):
         raise HTTPException(status_code=404, detail=f"Scene '{scene_id}' not found")
 
     persistence = get_persistence()
     persistence.delete(scene_id)
-    del registry[scene_id]
+    await registry.delete(scene_id)
     logger.info("Deleted scene: %s", scene_id)
     return {"status": "ok", "scene_id": scene_id}
 
