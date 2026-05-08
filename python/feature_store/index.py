@@ -108,6 +108,11 @@ class FeatureIndex:
             raise FeatureStoreError(f"Index for scene '{self.scene_id}' not built yet")
 
         query = query.astype(np.float32).reshape(1, -1)
+        if query.shape[1] != self._feature_dim:
+            raise FeatureStoreError(
+                f"Query dim {query.shape[1]} does not match index dim {self._feature_dim} "
+                f"for scene '{self.scene_id}'"
+            )
         k = min(top_k, self._index.ntotal)
         scores, ids = self._index.search(query, k)
         scores, ids = scores[0], ids[0]

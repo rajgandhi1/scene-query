@@ -58,6 +58,12 @@ class Searcher:
             QueryError: If the search operation fails.
         """
         index = self._get_index(scene_id)
+        query_dim = query_embedding.shape[0] if query_embedding.ndim == 1 else query_embedding.shape[-1]
+        if query_dim != index.feature_dim:
+            raise QueryError(
+                f"Query embedding dim {query_dim} does not match index dim {index.feature_dim} "
+                f"for scene '{scene_id}'. Re-ingest the scene with the current CLIP model."
+            )
         try:
             ids, scores = index.search(query_embedding, top_k, threshold)
             positions = index.positions
