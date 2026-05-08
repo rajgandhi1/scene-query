@@ -166,12 +166,20 @@ class PointCloudProjector(FeatureProjector):
         return result
 
 
+_ALPHA_CONTRIB_THRESHOLD = 1e-4  # minimum T*alpha to be considered a rendering contributor
+
+
 class GaussianSplatProjector(FeatureProjector):
     """
-    Project features onto Gaussian Splat centers.
+    Project features onto Gaussian Splat centers with alpha-compositing aware weighting.
 
-    Projects onto Gaussian means (centers) using the same camera projection
-    as point clouds. Alpha-compositing aware weighting is left for Phase 3.
+    For each camera view, visible Gaussians are sorted front-to-back by depth. Their
+    rendering contribution is computed via the standard alpha compositing formula:
+        weight_i = T_i * alpha_i,   T_i = prod_{j<i}(1 - alpha_j)
+    Features are accumulated as a weighted sum and then normalized by total weight.
+
+    Opacities stored on ``GaussianSplat`` are expected to be logit values (as produced
+    by the standard 3DGS PLY format); sigmoid is applied to recover alpha in [0, 1].
     """
 
     def project(
@@ -184,13 +192,90 @@ class GaussianSplatProjector(FeatureProjector):
         if not isinstance(scene, GaussianSplat):
             raise FeatureLiftingError("GaussianSplatProjector requires a GaussianSplat scene")
 
-        # Treat Gaussian centers as points for Phase 1
-        point_scene = PointCloud(
-            points=scene.means,
-            colors=np.zeros_like(scene.means),
-        )
-        pc_projector = PointCloudProjector()
-        return pc_projector.project(features_2d, camera_poses, point_scene, aggregation)
+        # Logit opacities → alpha in [0, 1] via sigmoid
+        alphas = 1.0 / (1.0 + np.exp(-scene.opacities.astype(np.float64)))  # (N,)
+
+        N = len(scene.means)
+        D = features_2d[0].embeddings.shape[-1]
+
+        accum = np.zeros((N, D), dtype=np.float64)
+        weight_sum = np.zeros(N, dtype=np.float64)
+
+        for cam_pose, img_feats in zip(camera_poses, features_2d):
+            uvs, valid = cam_pose.project(scene.means)
+            if not valid.any():
+                continue
+
+            # Depth of each Gaussian in this camera (z in camera space)
+            pts_cam = (cam_pose.R @ scene.means.T).T + cam_pose.t  # (N, 3)
+            valid_idx = np.where(valid)[0]
+
+            # Assign each visible Gaussian to its nearest feature tile.
+            # Transmittance is computed per-tile so that Gaussians on different
+            # rays (different tiles) cannot occlude each other.
+            H_tiles = img_feats.embeddings.shape[0]
+            W_tiles = img_feats.embeddings.shape[1]
+            stride = img_feats.tile_stride
+            tile_cols = np.clip(uvs[valid_idx, 0].astype(int) // stride, 0, W_tiles - 1)
+            tile_rows = np.clip(uvs[valid_idx, 1].astype(int) // stride, 0, H_tiles - 1)
+            tile_ids = tile_rows * W_tiles + tile_cols  # (K,) flat tile index
+
+            for tile_id in np.unique(tile_ids):
+                t_mask = tile_ids == tile_id
+                t_global_idx = valid_idx[t_mask]  # Gaussians in this tile (global indices)
+                t_depths = pts_cam[t_global_idx, 2]
+
+                # Sort front-to-back within this tile
+                sort_order = np.argsort(t_depths)
+                sorted_idx = t_global_idx[sort_order]
+                sorted_alphas = alphas[sorted_idx]
+
+                # T_i = prod_{j<i}(1 - alpha_j)
+                T = np.ones(len(sorted_idx), dtype=np.float64)
+                if len(sorted_idx) > 1:
+                    T[1:] = np.cumprod(1.0 - sorted_alphas[:-1])
+
+                contrib = T * sorted_alphas  # rendering contribution per Gaussian
+
+                # Fetch the single tile feature (all Gaussians in this tile share it)
+                tile_row, tile_col = divmod(int(tile_id), W_tiles)
+                tile_feat = img_feats.embeddings[tile_row, tile_col].astype(np.float64)  # (D,)
+
+                # Skip Gaussians whose per-view contribution is below threshold
+                meaningful = contrib > _ALPHA_CONTRIB_THRESHOLD
+                if not meaningful.any():
+                    continue
+
+                mi = sorted_idx[meaningful]
+                mi_contrib = contrib[meaningful]
+
+                if aggregation == "max":
+                    accum[mi] = np.maximum(accum[mi], tile_feat)
+                    weight_sum[mi] = np.maximum(weight_sum[mi], mi_contrib)
+                else:  # mean
+                    accum[mi] += mi_contrib[:, np.newaxis] * tile_feat
+                    weight_sum[mi] += mi_contrib
+
+        # Weighted mean: divide accumulated sum by total contribution weight
+        if aggregation == "mean":
+            has_weight = weight_sum > 0
+            accum[has_weight] /= weight_sum[has_weight, np.newaxis]
+
+        result = accum.astype(np.float32)
+
+        # L2-normalize non-zero vectors
+        norms = np.linalg.norm(result, axis=1, keepdims=True)
+        nonzero = norms[:, 0] > 0
+        result[nonzero] /= norms[nonzero]
+
+        invisible_count = (weight_sum == 0).sum()
+        if invisible_count > 0:
+            logger.debug(
+                "%d Gaussians had no rendering contribution — zero features assigned",
+                invisible_count,
+            )
+
+        return result
 
 
 class ProjectorFactory:
