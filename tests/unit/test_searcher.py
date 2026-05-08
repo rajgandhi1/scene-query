@@ -7,16 +7,19 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from python.feature_store.index import FeatureIndex
 from python.query_engine.searcher import SearchResult, Searcher
+from python.utils.errors import QueryError
 
 
-def _make_mock_index(n: int = 10, with_positions: bool = True) -> MagicMock:
+def _make_mock_index(n: int = 10, with_positions: bool = True, feature_dim: int = 512) -> MagicMock:
     """Return a mock FeatureIndex that returns predictable search results."""
     rng = np.random.default_rng(0)
     positions = rng.uniform(-5, 5, (n, 3)).astype(np.float32) if with_positions else None
 
     index = MagicMock()
     index.positions = positions
+    index.feature_dim = feature_dim
     # search() returns (ids, scores) numpy arrays
     index.search.return_value = (
         np.array([3, 7, 1], dtype=np.int64),
@@ -86,3 +89,23 @@ def test_search_result_default_position():
     """SearchResult defaults position_3d to (0, 0, 0) without explicit argument."""
     result = SearchResult(primitive_id=5, score=0.9)
     assert result.position_3d == (0.0, 0.0, 0.0)
+
+
+def test_search_raises_query_error_on_dim_mismatch():
+    """Mismatched query/index dim raises QueryError, not a numpy or FAISS exception."""
+    pytest.importorskip("faiss")
+
+    rng = np.random.default_rng(0)
+    features = rng.standard_normal((50, 512)).astype(np.float32)
+    features /= np.linalg.norm(features, axis=1, keepdims=True)
+
+    index = FeatureIndex("dim-mismatch-scene")
+    index.build(features)
+
+    persistence = MagicMock()
+    searcher = Searcher(persistence)
+    searcher._loaded["dim-mismatch-scene"] = index
+
+    wrong_dim_query = np.zeros(768, dtype=np.float32)  # ViT-L/14 dim vs ViT-B/32 index
+    with pytest.raises(QueryError, match="768.*512|dim.*mismatch|does not match"):
+        searcher.search("dim-mismatch-scene", wrong_dim_query)
