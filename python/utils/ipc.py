@@ -1,9 +1,9 @@
 """Python ↔ Rust viewer IPC over Unix socket using MessagePack."""
 
 import asyncio
-import socket
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import msgpack
 
@@ -17,6 +17,9 @@ CONNECT_TIMEOUT = 5.0
 RESPONSE_TIMEOUT = 5.0
 MAX_RECONNECT_ATTEMPTS = 5
 
+_BACKOFF_INITIAL = 1.0
+_BACKOFF_CAP = 30.0
+
 
 class ViewerBridge:
     """
@@ -24,6 +27,8 @@ class ViewerBridge:
 
     Sends highlight commands via MessagePack-encoded messages over a Unix
     domain socket. Gracefully degrades if the viewer is not connected.
+    On disconnect, retries with exponential backoff (1s, 2s, 4s … capped at 30s)
+    on each subsequent highlight call.
 
     Usage:
         bridge = ViewerBridge()
@@ -36,11 +41,17 @@ class ViewerBridge:
         self._socket_path = socket_path
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._connected = False
+        self._status: Literal["connected", "disconnected", "reconnecting"] = "disconnected"
+        self._backoff: float = _BACKOFF_INITIAL
+        self._next_reconnect_at: float = 0.0
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        return self._status == "connected"
+
+    @property
+    def viewer_status(self) -> Literal["connected", "disconnected", "reconnecting"]:
+        return self._status
 
     async def connect(self, timeout: float = CONNECT_TIMEOUT) -> None:
         """Attempt to connect to the viewer socket."""
@@ -49,11 +60,51 @@ class ViewerBridge:
                 asyncio.open_unix_connection(str(self._socket_path)),
                 timeout=timeout,
             )
-            self._connected = True
+            self._status = "connected"
+            self._backoff = _BACKOFF_INITIAL
             logger.info("Connected to viewer at %s", self._socket_path)
-        except (FileNotFoundError, ConnectionRefusedError, TimeoutError) as exc:
+        except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError) as exc:
             logger.warning("Viewer not available: %s — operating without live highlights", exc)
-            self._connected = False
+            self._status = "disconnected"
+
+    def _on_disconnect(self) -> None:
+        """Transition to reconnecting after an in-use connection loss."""
+        self._status = "reconnecting"
+        self._backoff = _BACKOFF_INITIAL
+        self._next_reconnect_at = time.monotonic() + self._backoff
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+        self._reader = None
+        self._writer = None
+        logger.warning("Viewer disconnected — will retry with exponential backoff")
+
+    async def _try_reconnect(self) -> bool:
+        """Attempt one reconnect if the backoff window has elapsed."""
+        if time.monotonic() < self._next_reconnect_at:
+            return False
+
+        logger.debug(
+            "Attempting reconnect to viewer at %s (backoff=%.1fs)",
+            self._socket_path,
+            self._backoff,
+        )
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(str(self._socket_path)),
+                timeout=CONNECT_TIMEOUT,
+            )
+            self._status = "connected"
+            self._backoff = _BACKOFF_INITIAL
+            logger.info("Reconnected to viewer at %s", self._socket_path)
+            return True
+        except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError) as exc:
+            logger.debug("Reconnect attempt failed: %s", exc)
+            self._backoff = min(self._backoff * 2, _BACKOFF_CAP)
+            self._next_reconnect_at = time.monotonic() + self._backoff
+            return False
 
     async def highlight(
         self,
@@ -72,8 +123,12 @@ class ViewerBridge:
         Returns:
             True if the viewer acknowledged, False if viewer is unavailable.
         """
-        if not self._connected:
+        if self._status == "disconnected":
             return False
+
+        if self._status == "reconnecting":
+            if not await self._try_reconnect():
+                return False
 
         message = {
             "op": "highlight",
@@ -87,19 +142,25 @@ class ViewerBridge:
             return response.get("status") == "ok"
         except IPCError as exc:
             logger.warning("IPC error during highlight: %s", exc)
-            self._connected = False
+            self._on_disconnect()
             return False
 
     async def clear_highlights(self) -> bool:
         """Remove all current highlights from the viewer."""
-        if not self._connected:
+        if self._status == "disconnected":
             return False
+
+        if self._status == "reconnecting":
+            if not await self._try_reconnect():
+                return False
+
         try:
             await self._send({"op": "clear"})
             response = await self._recv()
             return response.get("status") == "ok"
-        except IPCError:
-            self._connected = False
+        except IPCError as exc:
+            logger.warning("IPC error during clear_highlights: %s", exc)
+            self._on_disconnect()
             return False
 
     async def _send(self, payload: dict[str, Any]) -> None:
@@ -133,5 +194,5 @@ class ViewerBridge:
                 await self._writer.wait_closed()
             except Exception:
                 pass
-        self._connected = False
+        self._status = "disconnected"
         logger.info("Viewer bridge closed")

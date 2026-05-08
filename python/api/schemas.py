@@ -149,4 +149,4 @@ class SceneMetadata(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     models_loaded: list[str]
-    viewer_connected: bool
+    viewer_status: Literal["connected", "disconnected", "reconnecting"]
