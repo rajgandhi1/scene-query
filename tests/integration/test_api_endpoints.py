@@ -11,7 +11,7 @@ def test_health_endpoint(api_client):
     data = response.json()
     assert data["status"] in ("ok", "degraded")
     assert "models_loaded" in data
-    assert "viewer_connected" in data
+    assert data["viewer_status"] in ("connected", "disconnected", "reconnecting")
 
 
 def test_query_unknown_scene(api_client):

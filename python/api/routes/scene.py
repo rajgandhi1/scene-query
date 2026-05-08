@@ -71,5 +71,5 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         models_loaded=model_registry.loaded_models(),
-        viewer_connected=bridge.connected if bridge else False,
+        viewer_status=bridge.viewer_status if bridge else "disconnected",
     )
