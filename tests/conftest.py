@@ -55,11 +55,13 @@ def camera_params_json() -> dict:
 
 
 @pytest.fixture
-def api_client():
-    """FastAPI TestClient with app fully wired."""
+def api_client(tmp_path, monkeypatch):
+    """FastAPI TestClient with app fully wired, using an isolated temp DB."""
+    import python.api.schemas as schemas_mod
     from python.api.app import create_app
     from python.models.registry import ModelRegistry
 
+    monkeypatch.setattr(schemas_mod.settings, "db_url", f"sqlite:///{tmp_path}/test.db")
     ModelRegistry.reset()
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as client:

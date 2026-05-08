@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,38 +18,12 @@ from python.feature_store.index import FeatureIndex
 from python.feature_store.persistence import IndexPersistence
 from python.ingestion.loaders import PointCloud, Scene, SceneLoaderFactory
 from python.ingestion.validators import SceneValidator
+from python.db.registry import SceneRegistryDB
 from python.utils.errors import IngestionError, ValidationError
 from python.utils.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-class SceneRegistry:
-    """Thread-safe async scene registry backed by an asyncio.Lock."""
-
-    def __init__(self) -> None:
-        self._data: dict[str, dict[str, object]] = {}
-        self._lock = asyncio.Lock()
-
-    async def get(self, scene_id: str) -> dict[str, object] | None:
-        async with self._lock:
-            return self._data.get(scene_id)
-
-    async def set(self, scene_id: str, meta: dict[str, object]) -> None:
-        async with self._lock:
-            self._data[scene_id] = meta
-
-    async def delete(self, scene_id: str) -> None:
-        async with self._lock:
-            del self._data[scene_id]
-
-    async def contains(self, scene_id: str) -> bool:
-        async with self._lock:
-            return scene_id in self._data
-
-
-_registry = SceneRegistry()
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -77,7 +50,7 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
         features = _lift_features(scene, request)
 
         # 4. Build and persist index (positions stored alongside FAISS index)
-        from python.api.app import get_persistence
+        from python.api.app import get_persistence, get_scene_registry
         persistence: IndexPersistence = get_persistence()
 
         positions = scene.points if isinstance(scene, PointCloud) else scene.means
@@ -86,7 +59,7 @@ async def ingest_scene(request: IngestRequest) -> IngestResponse:
         persistence.save(feature_index)
 
         # 5. Register scene metadata
-        await _registry.set(scene_id, {
+        await get_scene_registry().set(scene_id, {
             "scene_id": scene_id,
             "scene_type": request.scene_type,
             "primitive_count": len(scene),
@@ -352,5 +325,6 @@ def _synthesize_orbital_poses(
     return poses
 
 
-def get_scene_registry() -> SceneRegistry:
-    return _registry
+def get_scene_registry() -> SceneRegistryDB:
+    from python.api.app import get_scene_registry as _get
+    return _get()
