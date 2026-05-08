@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_file_size_gb: float = 5.0
     query_rate_limit: int = 60  # requests per minute per IP
+    db_url: str = "sqlite:///data/scene-query.db"
 
     model_config = {"env_prefix": "SQ_"}
 

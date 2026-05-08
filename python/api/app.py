@@ -13,6 +13,7 @@ from python.agent.tools import ToolExecutor
 from python.api._limiter import limiter
 from python.api.routes import agent, ingest, query, scene
 from python.api.schemas import settings
+from python.db.registry import SceneRegistryDB
 from python.feature_store.persistence import IndexPersistence
 from python.utils.errors import IngestionError, QueryError, SceneQueryError
 from python.utils.ipc import ViewerBridge
@@ -24,6 +25,7 @@ logger = get_logger(__name__)
 _persistence: IndexPersistence | None = None
 _viewer_bridge: ViewerBridge | None = None
 _tool_executor: ToolExecutor | None = None
+_scene_registry: SceneRegistryDB | None = None
 
 
 def get_persistence() -> IndexPersistence:
@@ -47,14 +49,25 @@ def get_tool_executor() -> ToolExecutor:
     return _tool_executor
 
 
+def get_scene_registry() -> SceneRegistryDB:
+    if _scene_registry is None:
+        raise RuntimeError("App not started — scene registry not initialized")
+    return _scene_registry
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global _persistence, _viewer_bridge, _tool_executor
+    global _persistence, _viewer_bridge, _tool_executor, _scene_registry
 
     configure_logging(level=settings.log_level)
     logger.info("scene-query starting up")
 
     _persistence = IndexPersistence(store_root=settings.index_root)
+
+    _scene_registry = SceneRegistryDB(db_url=settings.db_url)
+    await _scene_registry.initialize()
+    scenes = await _scene_registry.all_scenes()
+    logger.info("Rehydrated %d scene(s) from registry DB", len(scenes))
 
     _viewer_bridge = ViewerBridge(socket_path=settings.socket_path)
     await _viewer_bridge.connect()
@@ -66,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("scene-query shutting down")
     if _viewer_bridge:
         await _viewer_bridge.close()
+    if _scene_registry:
+        await _scene_registry.close()
 
 
 async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
