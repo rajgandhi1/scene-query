@@ -171,6 +171,63 @@ All settings are environment variables with the `SQ_` prefix.
 
 ---
 
+## Interactive Demo (AI2-THOR)
+
+Try natural language queries against a simulated living room scene — no 3D scene files needed. The demo uses [AI2-THOR](https://ai2thor.allenai.org/) as a physics-simulated environment, encodes all visible objects with CLIP, and lets you type free-form queries in the terminal while a live window highlights the best-matching objects.
+
+### Install
+
+```bash
+uv sync --extra demo
+```
+
+This adds `ai2thor` and `opencv-python-headless` on top of the core dependencies. AI2-THOR downloads its Unity binary automatically on first run (~775 MB, one-time).
+
+### Run
+
+```bash
+python scripts/ai2thor_demo.py --interactive
+```
+
+Default scene is `FloorPlan201` (living room). To try a different room:
+
+```bash
+python scripts/ai2thor_demo.py --interactive --scene FloorPlan1      # kitchen
+python scripts/ai2thor_demo.py --interactive --scene FloorPlan301    # bedroom
+python scripts/ai2thor_demo.py --interactive --scene FloorPlan401    # bathroom
+```
+
+### What happens
+
+1. **Indexing** (~30 s) — the agent walks through the scene, crops every visible object, and encodes each with CLIP ViT-B/32. You'll see the scene scanning in the background.
+2. **Live window opens** — the current room view is displayed.
+3. **Type any query** in the terminal and press Enter. The window immediately highlights every object of the best-matching type in neon yellow.
+
+### Controls
+
+| Key | Action |
+|-----|--------|
+| `W` / `S` | Move forward / back |
+| `A` / `D` | Rotate left / right |
+| `Q` / `E` | Look up / down |
+| `Esc` | Quit |
+
+> **Note:** Click the cv2 window once after it opens so that keypresses are captured there rather than the terminal.
+
+### Example queries
+
+```
+sofa or couch
+television or screen
+floor lamp
+book or magazine
+laptop
+```
+
+Queries are plain English — CLIP handles the semantic matching. Results update instantly after indexing because the comparison is just a dot product against pre-computed embeddings.
+
+---
+
 ## Development
 
 ```bash
